@@ -1,0 +1,23 @@
+[project]
+name = "lg-app"
+version = "0.1.0"
+description = "Application Streamlit Loup-Garou avec Maitre du jeu LLM et persistance MongoDB."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit>=1.32",
+    "pymongo>=4.6",
+    "pydantic>=2.6",
+    "python-dotenv>=1.0",
+    "google-generativeai>=0.5",
+    "langchain>=0.2",
+    "langchain-google-genai>=0.0.12",
+    "tenacity>=8.2",
+    "uuid6>=2024.1",
+    "langchain-core>=0.3.79",
+    "langchain-openai>=0.3.35",
+    "openai>=2.7.1",
+]
+
+[project.scripts]
+start = "streamlit run app.py"
