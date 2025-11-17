@@ -3,14 +3,20 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple, Callable
 
-from langchain.agents import AgentExecutor, create_structured_chat_agent
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain.agents import AgentExecutor, create_structured_chat_agent, create_tool_calling_agent
+from langchain_core.messages import AIMessage, HumanMessage, BaseMessage, FunctionMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field, create_model
 
 from . import agent_runtime, agent_tools, llm_gm
+from langchain_core.runnables import Runnable, RunnablePassthrough
+from langchain_core.agents import AgentAction, AgentFinish
+from langchain_core.messages import FunctionMessage
+from langchain_core.exceptions import OutputParserException
+from langchain_core.prompts import BasePromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
 
 
 def _schema_type_to_python(schema: Dict[str, str]) -> Tuple[type, Dict[str, object]]:
@@ -44,19 +50,18 @@ def _build_args_model(name: str, parameters: Dict[str, object]) -> BaseModel:
     return create_model(model_name, **fields)  # type: ignore[return-value]
 
 
-def _wrap_tool(identifier: str, func: Callable[..., str]) -> Callable[..., str]:
-    def _tool(**kwargs: object) -> str:
+def _wrap_tool(identifier: str, func: Callable[..., str]) -> Callable[..., BaseMessage]:
+    def _tool(**kwargs: object) -> BaseMessage:
         try:
-            return func(**kwargs)
+            return AIMessage(content=func(**kwargs))
         except agent_runtime.AgentToolError as exc:
             context = agent_runtime.get_current_context()
             context.errors.append(str(exc))
-            return f"Erreur: {exc}"
+            return AIMessage(content=f"Erreur: {exc}")
     _tool.__name__ = identifier
     return _tool
 
 
-@lru_cache
 def _build_tools() -> List[StructuredTool]:
     tools: List[StructuredTool] = []
     for spec in agent_tools.TOOL_DEFINITIONS:
@@ -90,7 +95,6 @@ def _build_tools() -> List[StructuredTool]:
     return tools
 
 
-@lru_cache
 def _build_agent_executor() -> AgentExecutor:
     tools = _build_tools()
     llm = ChatGoogleGenerativeAI(
@@ -104,6 +108,10 @@ def _build_agent_executor() -> AgentExecutor:
         "Si une action échoue, explique clairement le problème et propose une alternative.\n\n"
         "Outils disponibles : {tool_names}\n{tools}"
     )
+    tool_names = ", ".join([tool.name for tool in tools])
+    formatted_tools = "\n".join(
+        f"{tool.name}: {tool.description}" for tool in tools
+    )
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", system_prompt),
@@ -112,8 +120,9 @@ def _build_agent_executor() -> AgentExecutor:
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ]
     )
-    agent = create_structured_chat_agent(llm, tools, prompt)
-    return AgentExecutor(agent=agent, tools=tools, handle_parsing_errors=True, verbose=False)
+    prompt = prompt.partial(tool_names=tool_names, tools=formatted_tools)
+    agent = create_tool_calling_agent(llm, tools, prompt)
+    return AgentExecutor(agent=agent, tools=tools, handle_parsing_errors=True, verbose=True)
 
 
 def process_message(
@@ -127,24 +136,22 @@ def process_message(
         user_message=user_message,
     )
     token = agent_runtime.set_current_context(context)
-    try:
-        executor = _build_agent_executor()
-        lc_history: List[object] = []
-        for message in chat_history:
-            if message["role"] == "user":
-                lc_history.append(HumanMessage(content=message["content"]))
-            else:
-                lc_history.append(AIMessage(content=message["content"]))
-        result = executor.invoke(
-            {"input": user_message, "chat_history": lc_history, "agent_scratchpad": []}
-        )
-        assistant_reply = result.get("output", "").strip()
-        if not assistant_reply:
-            assistant_reply = "Je n'ai pas pu générer de réponse pour le moment."
-    except Exception as exc:  # pragma: no cover - sécurité
-        assistant_reply = f"Je rencontre une difficulté : {exc}"
-        context.errors.append(str(exc))
-    finally:
-        agent_runtime.reset_current_context(token)
+    executor = _build_agent_executor()
+    lc_history: List[object] = []
+    for message in chat_history:
+        if message["role"] == "user":
+            lc_history.append(HumanMessage(content=message["content"]))
+        else:
+            lc_history.append(AIMessage(content=message["content"]))
+    result = executor.invoke(
+        {
+            "input": user_message,
+            "chat_history": lc_history,
+            "agent_scratchpad": []
+        }
+    )
+    assistant_reply = result.get("output", "").strip()
+    if not assistant_reply:
+        assistant_reply = "Je n'ai pas pu générer de réponse pour le moment."
 
     return agent_runtime.persist_interaction(context, assistant_reply)
