@@ -104,7 +104,10 @@ def _build_agent_executor() -> AgentExecutor:
     )
     system_prompt = (
         "Tu es le maître du jeu du Loup-Garou. Utilise exclusivement les outils fournis pour modifier la partie. "
-        "Décris brièvement les actions réalisées, rappelle la phase en cours et les conséquences pour les joueurs. "
+        "IMPORTANT: Respecte TOUJOURS l'ordre des phases de nuit : 1) Voyante (night_seer), 2) Loups (night_wolves), 3) Sorcière (night_witch). "
+        "Quand tu commences une nuit, utilise l'outil 'run_night_sequence' pour orchestrer les phases dans le bon ordre. "
+        "Ne saute JAMAIS une phase. Si un rôle est mort, mentionne-le mais passe à la phase suivante. "
+        "Après chaque action de nuit, vérifie la phase actuelle avec 'run_night_sequence' pour savoir qui doit jouer. "
         "Si une action échoue, explique clairement le problème et propose une alternative.\n\n"
         "Outils disponibles : {tool_names}\n{tools}"
     )

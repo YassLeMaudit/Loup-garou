@@ -124,6 +124,11 @@ TOOL_DEFINITIONS: List[ToolSpec] = [
         },
     },
     {
+        "name": "run_night_sequence",
+        "description": "Orchestre automatiquement toute la séquence de nuit : appel de la voyante, puis des loups, puis de la sorcière. Utilise cet outil au lieu d'appeler chaque phase individuellement.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
         "name": "advance_to_day",
         "description": "Annonce la fin de la nuit, applique les morts restants et passe au jour.",
         "parameters": {"type": "object", "properties": {}},

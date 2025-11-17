@@ -15,7 +15,7 @@ SYSTEM_PROMPT = (
     "sans révéler d'informations secrètes sauf si la phase l'exige."
 )
 
-DEFAULT_MODEL = os.getenv("MODEL_NAME", "gemini-2.5-flash-lite")
+DEFAULT_MODEL = os.getenv("MODEL_NAME", "gemini-2.5-flash")
 _GEMINI_CONFIGURED = False
 
 

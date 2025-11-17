@@ -167,6 +167,16 @@ def tool_assign_roles(seed: Optional[int] = None) -> str:
 def tool_seer_peek(target_name: str) -> str:
     context = get_current_context()
     game = _ensure_game(context)
+    
+    # Vérification : on doit être en phase voyante
+    if game.phase != "night_seer":
+        if game.phase == "lobby":
+            raise AgentToolError("Les rôles doivent d'abord être distribués. Utilise 'distribue les rôles'.")
+        elif game.phase == "day":
+            raise AgentToolError("C'est le jour. La Voyante ne peut agir que la nuit. Lance d'abord une nouvelle nuit.")
+        else:
+            raise AgentToolError(f"Ce n'est pas le tour de la Voyante. Phase actuelle : {game.phase}. Utilise 'run_night_sequence' pour voir qui doit jouer.")
+    
     target = utils.find_player_by_name(game.players, target_name)
     if not target:
         raise AgentToolError(f"{target_name} n'est pas un joueur valide.")
@@ -184,6 +194,21 @@ def tool_seer_peek(target_name: str) -> str:
 def tool_wolves_vote(target_name: str) -> str:
     context = get_current_context()
     game = _ensure_game(context)
+    
+    # Vérification : on doit être en phase loups
+    if game.phase == "night_seer":
+        seer = next((p for p in game.players if p.role == "seer" and p.status == "alive"), None)
+        if seer:
+            raise AgentToolError("La Voyante doit d'abord jouer son tour. Demande à la Voyante de sonder un joueur.")
+        else:
+            # Si la voyante est morte, on peut forcer le passage à la phase loups
+            game.phase = "night_wolves"
+            db.set_phase(game.code, "night_wolves")
+            context.reload_game()
+            game = context.game  # type: ignore[assignment]
+    elif game.phase != "night_wolves":
+        raise AgentToolError(f"Ce n'est pas le tour des Loups. Phase actuelle : {game.phase}. Utilise 'run_night_sequence' pour voir qui doit jouer.")
+    
     target = utils.find_player_by_name(game.players, target_name)
     if not target:
         raise AgentToolError(f"{target_name} est introuvable.")
@@ -203,6 +228,22 @@ def tool_wolves_vote(target_name: str) -> str:
 def tool_witch_action(heal: bool = False, poison_target: Optional[str] = None) -> str:
     context = get_current_context()
     game = _ensure_game(context)
+    
+    # Vérification : on doit être en phase sorcière
+    if game.phase == "night_seer":
+        raise AgentToolError("La Voyante doit d'abord jouer. Utilise 'run_night_sequence' pour orchestrer la nuit dans l'ordre.")
+    elif game.phase == "night_wolves":
+        wolves = [p for p in game.players if p.role == "wolf" and p.status == "alive"]
+        if wolves:
+            raise AgentToolError("Les Loups doivent d'abord attaquer. Demande aux Loups de choisir leur victime.")
+        else:
+            # Si tous les loups sont morts, on peut forcer le passage à la phase sorcière
+            game.phase = "night_witch"
+            db.set_phase(game.code, "night_witch")
+            context.reload_game()
+            game = context.game  # type: ignore[assignment]
+    elif game.phase != "night_witch":
+        raise AgentToolError(f"Ce n'est pas le tour de la Sorcière. Phase actuelle : {game.phase}. Utilise 'run_night_sequence' pour voir qui doit jouer.")
     poison_id = None
     poisoned_name = None
     if poison_target:
@@ -254,6 +295,68 @@ def tool_advance_to_day() -> str:
     return message
 
 
+def tool_run_night_sequence() -> str:
+    """Orchestre automatiquement toute la séquence de nuit avec narration."""
+    context = get_current_context()
+    game = _ensure_game(context)
+    
+    if game.phase not in ["night_seer", "night_wolves", "night_witch"]:
+        raise AgentToolError("La séquence de nuit ne peut démarrer que pendant une phase de nuit.")
+    
+    messages = []
+    
+    # Phase Voyante (si pas déjà passée)
+    if game.phase == "night_seer":
+        seer = next((p for p in game.players if p.role == "seer" and p.status == "alive"), None)
+        if seer:
+            messages.append(f"🔮 La nuit commence. La Voyante ({seer.name}) se réveille.")
+            messages.append(f"Voyante, qui veux-tu sonder ? (Utilise : 'la voyante regarde [nom]')")
+        else:
+            messages.append("🔮 La Voyante n'est plus parmi nous...")
+            # Passer automatiquement à la phase suivante si la voyante est morte
+            game.phase = "night_wolves"
+            db.set_phase(game.code, "night_wolves")
+            context.reload_game()
+            game = context.game  # type: ignore[assignment]
+    
+    # Phase Loups (si on est à cette phase ou si on vient de passer)
+    if game.phase == "night_wolves":
+        wolves = [p for p in game.players if p.role == "wolf" and p.status == "alive"]
+        if wolves:
+            wolf_names = ", ".join(p.name for p in wolves)
+            messages.append(f"🐺 Les Loups-garous ({wolf_names}) se réveillent.")
+            messages.append(f"Loups, qui voulez-vous dévorer ? (Utilise : 'les loups attaquent [nom]')")
+        else:
+            messages.append("🐺 Les Loups-garous ont tous été éliminés...")
+            # Passer automatiquement à la phase suivante si tous les loups sont morts
+            game.phase = "night_witch"
+            db.set_phase(game.code, "night_witch")
+            context.reload_game()
+            game = context.game  # type: ignore[assignment]
+    
+    # Phase Sorcière (si on est à cette phase ou si on vient de passer)
+    if game.phase == "night_witch":
+        witch = next((p for p in game.players if p.role == "witch" and p.status == "alive"), None)
+        if witch:
+            messages.append(f"🧪 La Sorcière ({witch.name}) se réveille.")
+            potion_info = []
+            if not game.potions.heal_used and game.last_killed:
+                victim = next((p for p in game.players if p.id == game.last_killed), None)
+                if victim:
+                    potion_info.append(f"Les loups ont attaqué {victim.name}. Tu peux le/la sauver avec ta potion de soin.")
+            if not game.potions.poison_used:
+                potion_info.append("Tu disposes encore de ta potion de poison.")
+            if potion_info:
+                messages.append("Sorcière : " + " ".join(potion_info))
+                messages.append("(Utilise : 'la sorcière sauve [nom]' ou 'la sorcière empoisonne [nom]' ou passe ton tour)")
+        else:
+            messages.append("🧪 La Sorcière n'est plus parmi nous...")
+            # Si la sorcière est morte, on peut avancer directement au jour
+            messages.append("Toutes les phases de nuit sont terminées. Utilise 'réveille le village' pour passer au jour.")
+    
+    return "\n".join(messages)
+
+
 def tool_start_next_night() -> str:
     context = get_current_context()
     game = _ensure_game(context)
@@ -295,6 +398,7 @@ TOOL_FUNCTIONS = {
     "seer_peek": tool_seer_peek,
     "wolves_vote": tool_wolves_vote,
     "witch_action": tool_witch_action,
+    "run_night_sequence": tool_run_night_sequence,
     "advance_to_day": tool_advance_to_day,
     "start_next_night": tool_start_next_night,
     "game_status": tool_game_status,
